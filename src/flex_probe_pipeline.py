@@ -2257,5 +2257,8 @@ class FlexProbeDesigner:
             if isinstance(transcript_sequence, tuple):
                 transcript_sequence = transcript_sequence[0]
             n_hits, _ = self.blast_hits(transcript_sequence)
-            expect_hits.append(n_hits)
+            # A probe always hits the gene it was designed on. If the target is not found end to end
+            # in the background (e.g. a user-supplied or fusion sequence), still expect that one hit,
+            # matching the default used when BLAST is disabled.
+            expect_hits.append(max(n_hits, 1))
         return expect_hits
