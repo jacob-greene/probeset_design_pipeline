@@ -2050,8 +2050,9 @@ class FlexProbeDesigner:
                 all_probes[transcript_name] = []
             else:
                 all_probes[transcript_name] = probes
-        # If we are running with approximate search, we should filter out probes that have mismatches
-        if fast:
+        # Filter out probes with off-target hits. This requires the BLAST database,
+        # which is only built when BLAST is enabled (i.e. self.fast is False).
+        if not self.fast:
             lhs_seqs = [probe.lhs_gene_sequence for probes in all_probes.values() for probe in probes]
             rhs_seqs = [probe.rhs_gene_sequence for probes in all_probes.values() for probe in probes]
             expect_hits = None if not expect_hits else [hits for hits, probes in zip(expect_hits, all_probes.values()) for _ in probes]
@@ -2061,14 +2062,19 @@ class FlexProbeDesigner:
             for transcript_name, probes in list(all_probes.items()):
                 removed = []
                 for probe in probes:
+                    # Record the hits on every probe, including the ones that are
+                    # removed, so that the reason for a removal is auditable.
+                    probe.total_lhs_blast_hits = all_hits[curr_idx][0]
+                    probe.total_rhs_blast_hits = all_hits[curr_idx][1]
+                    probe.expected_blast_hits = expect_hits[curr_idx]
+                    probe.lhs_blast_hits = all_names[curr_idx][0]
+                    probe.rhs_blast_hits = all_names[curr_idx][1]
                     if curr_idx in to_remove:
                         removed.append(probe)
-                    else:
-                        probe.total_lhs_blast_hits = all_hits[curr_idx][0]
-                        probe.total_rhs_blast_hits = all_hits[curr_idx][1]
-                        probe.expected_blast_hits = expect_hits[curr_idx]
-                        probe.lhs_blast_hits = all_names[curr_idx][0]
-                        probe.rhs_blast_hits = all_names[curr_idx][1]
+                        print(f"  {transcript_name}: removed, "
+                              f"LHS hits {probe.total_lhs_blast_hits} {probe.lhs_blast_hits}, "
+                              f"RHS hits {probe.total_rhs_blast_hits} {probe.rhs_blast_hits}, "
+                              f"expected {probe.expected_blast_hits}")
                     curr_idx += 1
                 all_probes[transcript_name] = [probe for probe in probes if probe not in removed]
 
@@ -2210,8 +2216,9 @@ class FlexProbeDesigner:
             for name in missing:
                 print(f"-{name}")
 
-        # If we are running with approximate search, we should filter out probes that have mismatches
-        if fast:
+        # Filter out probes with off-target hits. This requires the BLAST database,
+        # which is only built when BLAST is enabled (i.e. self.fast is False).
+        if not self.fast:
             lhs_seqs = [probe.lhs_gene_sequence for probes in all_probes.values() for probe in probes]
             rhs_seqs = [probe.rhs_gene_sequence for probes in all_probes.values() for probe in probes]
             expect_hits = None if not expect_hits else [hits for hits, probes in zip(expect_hits, all_probes.values()) for _ in probes]
@@ -2221,14 +2228,19 @@ class FlexProbeDesigner:
             for transcript_name, probes in list(all_probes.items()):
                 removed = []
                 for probe in probes:
+                    # Record the hits on every probe, including the ones that are
+                    # removed, so that the reason for a removal is auditable.
+                    probe.total_lhs_blast_hits = all_hits[curr_idx][0]
+                    probe.total_rhs_blast_hits = all_hits[curr_idx][1]
+                    probe.expected_blast_hits = expect_hits[curr_idx]
+                    probe.lhs_blast_hits = all_names[curr_idx][0]
+                    probe.rhs_blast_hits = all_names[curr_idx][1]
                     if curr_idx in to_remove:
                         removed.append(probe)
-                    else:
-                        probe.total_lhs_blast_hits = all_hits[curr_idx][0]
-                        probe.total_rhs_blast_hits = all_hits[curr_idx][1]
-                        probe.expected_blast_hits = expect_hits[curr_idx]
-                        probe.lhs_blast_hits = all_names[curr_idx][0]
-                        probe.rhs_blast_hits = all_names[curr_idx][1]
+                        print(f"  {transcript_name}: removed, "
+                              f"LHS hits {probe.total_lhs_blast_hits} {probe.lhs_blast_hits}, "
+                              f"RHS hits {probe.total_rhs_blast_hits} {probe.rhs_blast_hits}, "
+                              f"expected {probe.expected_blast_hits}")
                     curr_idx += 1
                 all_probes[transcript_name] = [probe for probe in probes if probe not in removed]
 
