@@ -838,7 +838,9 @@ class FlexProbeDesigner:
         for aln in blast_out.alignments:
             name = aln.hit_def.split(" ")[0]
             # 10X recommends at least 5 mismatches for a probe to not hybridize efficiently, so select alignments with < 5 mismatches to be "hits"
-            matches = sum([hsp.identities for hsp in aln.hsps])
+            # A hit must hold the whole query in ONE local alignment. Summing over HSPs would let scattered
+            # partial matches on a long subject add up to the query length without containing it.
+            matches = max(hsp.identities for hsp in aln.hsps)
             if matches >= len(sequence) - 5:
                 hits[name].append(aln)
 
@@ -1715,12 +1717,12 @@ class FlexProbeDesigner:
             for aln in lhs_result.alignments:
                 name = aln.hit_def.split(" ")[0]
                 # 10X recommends at least 5 mismatches for a probe to not hybridize efficiently, so select alignments with < 5 mismatches to be "hits"
-                matches = sum([hsp.identities for hsp in aln.hsps])
+                matches = max(hsp.identities for hsp in aln.hsps)
                 if matches >= len(lhs_seqs[i]) - 5:
                     lhs_hits[name].append(aln)
             for aln in rhs_result.alignments:
                 name = aln.hit_def.split(" ")[0]
-                matches = sum([hsp.identities for hsp in aln.hsps])
+                matches = max(hsp.identities for hsp in aln.hsps)
                 if matches >= len(rhs_seqs[i]) - 5:
                     rhs_hits[name].append(aln)
 
