@@ -328,7 +328,7 @@ def transcriptome(genome: Genome, filter_incomplete: bool = True, filter_biotype
     :param genome: The genome to work with.
     :param filter_incomplete: Whether to filter out incomplete transcripts.
     :param filter_biotypes: The biotypes to filter out.
-    :return: The transcriptome. Key is transcript ID, value is the coding sequence.
+    :return: The transcriptome. Key is gene name and transcript ID, value is the full transcript sequence.
     """
     transcriptome = dict()
     unnamed_count = 0
@@ -347,7 +347,9 @@ def transcriptome(genome: Genome, filter_incomplete: bool = True, filter_biotype
             if filter_biotypes is not None and transcript.biotype in filter_biotypes:
                 continue
             try:
-                sequence = transcript.coding_sequence if transcript.complete else transcript.sequence
+                # Use the full transcript (including UTRs). Probes bind the mature mRNA, so an
+                # off-target match in an untranslated region is as real as one in a coding region.
+                sequence = transcript.sequence
             except Exception:
                 continue  # Skip transcripts with annotation issues (e.g., duplicate exon IDs)
             if sequence is not None:
