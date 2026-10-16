@@ -6,6 +6,7 @@ from io import StringIO
 from typing import Union
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from Bio.Blast import NCBIXML
 from pyensembl import Genome, Transcript, Exon
@@ -310,6 +311,142 @@ def probe_blast_search(blast_db: str,
     n_rhs_hits = len(set([aln.hit_def.split(" ")[0] for aln in rhs_hits.alignments if max(hsp.identities for hsp in aln.hsps) >= len(rhs_sequence) - 5]))
 
     return n_lhs_hits, n_rhs_hits
+
+
+class MismatchScanner:
+    """
+    Find every place in a background where a short query matches with at most a given number of
+    mismatches, on either strand. Unlike BLAST, the search is exact: it misses no such match.
+
+    It uses the pigeonhole principle. A query with at most m mismatches has at most m // 2 mismatches
+    in its first k bases or in its last k bases (2k <= query length). Every variant of these two seeds
+    with at most m // 2 substitutions is looked up in one pass over the background, and each candidate
+    is then checked base by base over the whole query. Insertions and deletions are not counted as matches.
+    """
+    _ENCODE = np.full(256, 4, dtype=np.uint8)
+    for _i, _base in enumerate("ACGT"):
+        _ENCODE[ord(_base)] = _i
+        _ENCODE[ord(_base.lower())] = _i
+    _COMPLEMENT = np.array([3, 2, 1, 0, 4], dtype=np.uint8)
+
+    def __init__(self, sequences: dict[str, str], seed_length: int = 12, chunk_size: int = 1 << 24):
+        """
+        :param sequences: The background. Key is the gene name, a space, and the transcript id; value is the sequence.
+        :param seed_length: The maximal seed length. 12 keeps one lookup table at 16 MB.
+        :param chunk_size: The number of background positions handled at once.
+        """
+        self.names = list(sequences.keys())
+        self.genes = [name.split(" ")[0] for name in self.names]
+        # One separator (code 4, never a match) between sequences, so no window crosses two of them
+        text = "#".join(sequences[name] for name in self.names).encode("ascii", errors="replace")
+        self.background = self._ENCODE[np.frombuffer(text, dtype=np.uint8)]
+        lengths = np.array([len(sequences[name]) for name in self.names], dtype=np.int64)
+        self.starts = np.concatenate([[0], np.cumsum(lengths + 1)[:-1]]).astype(np.int64)
+        self.ends = self.starts + lengths
+        self.seed_length = seed_length
+        self.chunk_size = chunk_size
+
+    def _encode_query(self, query: str) -> np.ndarray:
+        return self._ENCODE[np.frombuffer(query.encode("ascii", errors="replace"), dtype=np.uint8)]
+
+    @staticmethod
+    def _seed_variants(seed: np.ndarray, max_mismatches: int) -> np.ndarray:
+        """All codes of the seed with at most max_mismatches substitutions. A non-ACGT base is always a mismatch."""
+        k = len(seed)
+        unknown = [i for i in range(k) if seed[i] > 3]
+        if len(unknown) > max_mismatches:
+            return np.zeros(0, dtype=np.int64)
+        weights = 4 ** np.arange(k - 1, -1, -1, dtype=np.int64)
+        base_code = int(np.sum(np.where(seed > 3, 0, seed).astype(np.int64) * weights))
+        codes = []
+        known = [i for i in range(k) if seed[i] <= 3]
+        for n_extra in range(max_mismatches - len(unknown) + 1):
+            for extra in itertools.combinations(known, n_extra):
+                positions = unknown + list(extra)
+                choices = [[b for b in range(4) if b != seed[p]] for p in positions]
+                for bases in itertools.product(*choices):
+                    code = base_code
+                    for p, b in zip(positions, bases):
+                        code += (b - (0 if seed[p] > 3 else int(seed[p]))) * int(weights[p])
+                    codes.append(code)
+        return np.unique(np.array(codes, dtype=np.int64))
+
+    def search(self, queries: list[str], max_mismatches: int = 4) -> list[dict[str, int]]:
+        """
+        :param queries: The query sequences, in any case. Each must be at least 2 bases long.
+        :param max_mismatches: The highest number of mismatches that still counts as a match.
+        :return: For each query, the genes it matches, each with its lowest number of mismatches.
+        """
+        if len(queries) == 0:
+            return []
+        # Both strands: the reverse complement of a query is searched as one more query
+        encoded = [self._encode_query(q) for q in queries]
+        encoded += [self._COMPLEMENT[q[::-1]] for q in encoded]
+        lengths = np.array([len(q) for q in encoded], dtype=np.int64)
+        k = int(min(self.seed_length, lengths.min() // 2))
+        seed_mismatches = max_mismatches // 2
+
+        # Seed table: code -> (query, offset of the seed in the query)
+        key_codes, key_query, key_offset = [], [], []
+        for qi, q in enumerate(encoded):
+            for offset in (0, len(q) - k):
+                variants = self._seed_variants(q[offset:offset + k], seed_mismatches)
+                key_codes.append(variants)
+                key_query.append(np.full(len(variants), qi, dtype=np.int64))
+                key_offset.append(np.full(len(variants), offset, dtype=np.int64))
+        key_codes = np.concatenate(key_codes)
+        order = np.argsort(key_codes, kind="stable")
+        key_codes, key_query, key_offset = key_codes[order], np.concatenate(key_query)[order], np.concatenate(key_offset)[order]
+        unique_codes, first_key, key_counts = np.unique(key_codes, return_index=True, return_counts=True)
+        in_table = np.zeros(4 ** k, dtype=bool)
+        in_table[unique_codes] = True
+
+        max_len = int(lengths.max())
+        padded = np.full((len(encoded), max_len), 5, dtype=np.uint8)  # 5 matches nothing and is masked below
+        for qi, q in enumerate(encoded):
+            padded[qi, :len(q)] = q
+
+        best = [dict() for _ in queries]
+        n = len(self.background)
+        for chunk_start in range(0, n - k + 1, self.chunk_size):
+            chunk_end = min(chunk_start + self.chunk_size, n - k + 1)
+            window = self.background[chunk_start:chunk_end + k - 1]
+            m = chunk_end - chunk_start
+            codes = np.zeros(m, dtype=np.int64)
+            valid = np.ones(m, dtype=bool)
+            for j in range(k):
+                column = window[j:j + m]
+                codes = codes * 4 + np.minimum(column, 3)
+                valid &= column <= 3
+            hit_positions = np.flatnonzero(valid & in_table[codes])
+            if len(hit_positions) == 0:
+                continue
+            hit_codes = codes[hit_positions]
+            slot = np.searchsorted(unique_codes, hit_codes)
+            # Expand each seed hit to every (query, offset) that owns this code
+            counts = key_counts[slot]
+            positions = np.repeat(hit_positions + chunk_start, counts)
+            first = np.repeat(first_key[slot], counts)
+            within = np.arange(len(positions)) - np.repeat(np.cumsum(counts) - counts, counts)
+            keys = first + within
+            query_idx = key_query[keys]
+            starts = positions - key_offset[keys]
+            # The whole query must fall inside one background sequence
+            seq_idx = np.searchsorted(self.starts, starts, side="right") - 1
+            inside = (starts >= 0) & (seq_idx >= 0)
+            inside[inside] &= starts[inside] + lengths[query_idx[inside]] <= self.ends[seq_idx[inside]]
+            query_idx, starts, seq_idx = query_idx[inside], starts[inside], seq_idx[inside]
+            for batch in range(0, len(starts), 1 << 20):
+                qb, sb, tb = query_idx[batch:batch + (1 << 20)], starts[batch:batch + (1 << 20)], seq_idx[batch:batch + (1 << 20)]
+                target = self.background[sb[:, None] + np.minimum(np.arange(max_len)[None, :], lengths[qb][:, None] - 1)]
+                mismatches = ((target != padded[qb]) & (padded[qb] != 5)).sum(axis=1)
+                keep = mismatches <= max_mismatches
+                for qi, ti, mm in zip(qb[keep], tb[keep], mismatches[keep]):
+                    query = int(qi) % len(queries)
+                    gene = self.genes[ti]
+                    if mm < best[query].get(gene, max_mismatches + 1):
+                        best[query][gene] = int(mm)
+        return best
 
 
 def rank_and_filter_transcripts(transcripts: list[Transcript], use_support=True, filter_transcripts=True) -> list[Transcript]:

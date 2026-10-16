@@ -24,7 +24,7 @@ from tqdm.auto import tqdm
 from utils import max_homopolymer_length, blast_search, transcriptome, rank_and_filter_transcripts, get_melting_temp, \
     find_overlaps_with_flex, check_overlap_by_alignment, has_tandem_repeat, fetch_human_flex_v2_probeset, \
     fetch_mouse_visiumhd_probeset, fetch_mouse_flex_v1_probeset, fetch_mouse_flex_v2_probeset, \
-    fetch_human_visiumhd_probeset, fetch_human_flex_v1_probeset
+    fetch_human_visiumhd_probeset, fetch_human_flex_v1_probeset, MismatchScanner
 
 """
 Note: LHS refers to the left-hand side of the gene sequence, and RHS refers to the right-hand side of the gene sequence.
@@ -113,6 +113,7 @@ class FlexProbeConfig:
     tx_min_gc: float = 0.2
     tx_max_gc: float = 0.8
     evalue_cutoff: float = 1.0  # The evalue cutoff for blast hits
+    max_offtarget_mismatches: int = 4  # An arm with at most this many mismatches to a background sequence is an off-target hit
     flex_0bp_genotyping: bool = False  # If True, we will make 0bp genotyping probes
     variant_side: str = None  # Desired probe with the variant for flex_0bp_genotyping (lhs or rhs)
 
@@ -752,6 +753,7 @@ class FlexProbeDesigner:
         self.config = config
         self.fast = fast
         self.blast_db = self.working_dir / "blast_db" / "background"
+        self._mismatch_scanner = None  # Built on first use, from the same background as the BLAST database
 
         # We will cache the blast hits to avoid redundant calls
         self.blast_hits = functools.lru_cache(maxsize=None)(self.blast_hits)
@@ -1722,20 +1724,34 @@ class FlexProbeDesigner:
 
         assert len(lhs_results) == len(lhs_seqs) and len(rhs_results) == len(rhs_seqs)
 
+        # 10X recommends at least 5 mismatches for a probe to not hybridize efficiently, so an arm with
+        # at most max_offtarget_mismatches (default 4) mismatches is a "hit". BLAST cannot report a 25-nt
+        # arm with 3 or more mismatches at this e-value, so an exact mismatch scan finds those. BLAST
+        # still adds the hits that hold a small insertion or deletion, which the scan does not count.
+        max_mismatches = self.config.max_offtarget_mismatches
+        if self._mismatch_scanner is None:
+            self._mismatch_scanner = MismatchScanner(self.config.background)
+        # One pass over the background serves both sides
+        scan = self._mismatch_scanner.search(list(lhs_seqs) + list(rhs_seqs), max_mismatches)
+        lhs_scan, rhs_scan = scan[:len(lhs_seqs)], scan[len(lhs_seqs):]
+
         for i, (lhs_result, rhs_result, expect_hits) in enumerate(zip(lhs_results, rhs_results, expect_hits or [1]*len(lhs_seqs))):
             lhs_hits = defaultdict(list)
             rhs_hits = defaultdict(list)
-            for aln in lhs_result.alignments:
+            for aln in (lhs_result.alignments if lhs_result else []):
                 name = aln.hit_def.split(" ")[0]
-                # 10X recommends at least 5 mismatches for a probe to not hybridize efficiently, so select alignments with < 5 mismatches to be "hits"
                 matches = max(hsp.identities for hsp in aln.hsps)
-                if matches >= len(lhs_seqs[i]) - 5:
+                if matches >= len(lhs_seqs[i]) - max_mismatches:
                     lhs_hits[name].append(aln)
-            for aln in rhs_result.alignments:
+            for aln in (rhs_result.alignments if rhs_result else []):
                 name = aln.hit_def.split(" ")[0]
                 matches = max(hsp.identities for hsp in aln.hsps)
-                if matches >= len(rhs_seqs[i]) - 5:
+                if matches >= len(rhs_seqs[i]) - max_mismatches:
                     rhs_hits[name].append(aln)
+            for name in lhs_scan[i]:
+                lhs_hits.setdefault(name, [])
+            for name in rhs_scan[i]:
+                rhs_hits.setdefault(name, [])
 
             all_hits.append((len(lhs_hits), len(rhs_hits)))
             all_names.append((list(lhs_hits.keys()), list(rhs_hits.keys())))
