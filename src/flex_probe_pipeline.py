@@ -1838,6 +1838,10 @@ class FlexProbeDesigner:
         :param barcode: The barcode(s) to use for the probe.
         :return: The dataframe.
         """
+        for name, probe_list in probes.items():
+            for probe in probe_list:
+                if '*' in probe.lhs_probe or '*' in probe.rhs_probe:
+                    raise ValueError(f"'{name}': an oligo arm holds a '*' wildcard and cannot be ordered.")
         df = dict(
             name=[],  # The name of the transcript
 
@@ -2115,6 +2119,16 @@ class FlexProbeDesigner:
         :param search_method: Force a specific search method. 'brute_force' for exhaustive search, 'optimization' for dual annealing. None for automatic selection.
         :return: The dataframe result. Or if visium is True, a tuple of the flex probe dataframe and the visium probe dataframe.
         """
+        if self.config.flex_0bp_genotyping:
+            # In 0bp genotyping mode the variant base is part of an oligo arm, so a '*' wildcard
+            # substitution would be ordered as part of the oligo. Stop before any design or output.
+            for name, sequence in transcript_sequences.items():
+                mutated_sequence = sequence[1] if isinstance(sequence, tuple) else sequence
+                if '*' in mutated_sequence:
+                    raise ValueError(f"'{name}': a '*' wildcard substitution cannot be designed in 0bp genotyping "
+                                     f"mode, because the variant base would be part of an oligo arm. "
+                                     f"Give the alternative base, or use gap-fill mode.")
+
         all_probes = dict()
 
         missing = []
