@@ -356,6 +356,7 @@ class SnvProbeHelper:
             mutated_snv_end = None
             return original_sequence, mutated_sequence, mutated_snv_start, mutated_snv_end
 
+        wildcard_idx = None  # Index of a '*' wildcard substitution in the mutated sequence, if any
         if snv_start is not None:
             # Convert to 1 indexed
             snv_start_idx = snv_start - 1
@@ -376,6 +377,9 @@ class SnvProbeHelper:
 
             if snv_action == "mutation":
                 from_nucleotide, to_nucleotide = snv_data.split(">")
+                if to_nucleotide == '*':
+                    # Wildcard substitution: keep the '*' at this position when non-letters are stripped below
+                    wildcard_idx = snv_start_idx
                 # assert from_nucleotide == original_sequence[snv_start], "SNV data does not match the original sequence."
                 if from_nucleotide != original_sequence[snv_start_idx] and to_nucleotide != '*' and validate:
                     # print("SNV data does not match the original sequence.", from_nucleotide, to_nucleotide, original_sequence[snv_start_idx-1:snv_start_idx+2])
@@ -473,8 +477,13 @@ class SnvProbeHelper:
 
         original_sequence = [char for char in original_sequence if char.isalpha()]
         original_sequence = "".join(original_sequence)
-        mutated_sequence = [char for char in mutated_sequence if char.isalpha()]
-        mutated_sequence = "".join(mutated_sequence)
+        if wildcard_idx is None:
+            mutated_sequence = [char for char in mutated_sequence if char.isalpha()]
+            mutated_sequence = "".join(mutated_sequence)
+        else:
+            # Strip non-letters on both sides of the wildcard, but keep the wildcard itself
+            mutated_sequence = ("".join(char for char in mutated_sequence[:wildcard_idx] if char.isalpha()) + '*' +
+                                "".join(char for char in mutated_sequence[wildcard_idx + 1:] if char.isalpha()))
         return original_sequence, mutated_sequence, mutated_snv_start, mutated_snv_end
 
     def get_gene_sequence(self,

@@ -263,10 +263,12 @@ def blast_search(blast_db: str,
     :return: The BLAST results.
     """
     multi_sequences = not isinstance(sequence, str)
+    # BLAST drops a '*' wildcard from a query, which shifts every later position.
+    # 'N' keeps the position and aligns as one mismatch.
     if multi_sequences:
-        fasta = "\n".join([f">{i}\n{seq}" for i, seq in enumerate(sequence)])
+        fasta = "\n".join([f">{i}\n{seq.replace('*', 'N')}" for i, seq in enumerate(sequence)])
     else:
-        fasta = sequence
+        fasta = sequence.replace('*', 'N')
     blastn_command = ["blastn", "-db", str(blast_db), "-evalue", str(evalue), "-outfmt", "5", "-num_threads", "4", "-task", "blastn-short"]
     blast_out = subprocess.run(blastn_command, input=fasta, text=True, stdout=subprocess.PIPE).stdout
     if len(blast_out) == 0:
