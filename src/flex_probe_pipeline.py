@@ -347,9 +347,17 @@ class SnvProbeHelper:
                 original_sequence = transcript.coding_sequence
                 is_coding = True
             except ValueError:
-                # Transcript doesn't have a start codon, fall back to full sequence
-                original_sequence = transcript.sequence
-                is_coding = False
+                try:
+                    # Start codon but no stop codon: c.1 is still defined, so keep the c. frame
+                    original_sequence = transcript.sequence[transcript.first_start_codon_spliced_offset:]
+                    is_coding = True
+                except ValueError:
+                    # No start codon, so there is no c. frame: read positions as full-transcript positions
+                    original_sequence = transcript.sequence
+                    is_coding = False
+                    if snv_start is not None:
+                        print(f"WARNING: {transcript.transcript_id} has no start codon; "
+                              f"position {snv_start} is read as a full-transcript position", file=sys.stderr)
 
         if snv_action == '0bp':
             mutated_sequence = original_sequence
@@ -364,16 +372,15 @@ class SnvProbeHelper:
             snv_end_idx = snv_end
             # print(snv_start_idx, snv_end_idx)
 
+            if is_coding and (snv_start < 1 or snv_end > len(original_sequence)):
+                # A c. position must lie inside the coding sequence. 5' UTR (c.-N) and 3' UTR (c.*N)
+                # positions are not supported, and a transcript coordinate must not be passed as a c. position.
+                return None
+            if is_coding and len(original_sequence) < snv_end_idx + self.config.rhs_probe_length:
+                # The RHS arm reaches past the stop codon. Add the 3' UTR, which is part of the mRNA.
+                # The sequence still starts at c.1, so every c. position keeps its index.
+                original_sequence = transcript.sequence[transcript.first_start_codon_spliced_offset:]
             if len(original_sequence) < snv_end_idx + self.config.rhs_probe_length and validate: # <- Needed to prevent string index errors
-                if is_coding:  # Retry with the full sequence
-                    return self.modify_gene_sequence(
-                        transcript.sequence,
-                        snv_start,
-                        snv_end,
-                        snv_action,
-                        snv_data,
-                        validate=validate
-                    )
                 return None
 
             if snv_action == "mutation":
@@ -384,15 +391,6 @@ class SnvProbeHelper:
                 # assert from_nucleotide == original_sequence[snv_start], "SNV data does not match the original sequence."
                 if from_nucleotide != original_sequence[snv_start_idx] and to_nucleotide != '*' and validate:
                     # print("SNV data does not match the original sequence.", from_nucleotide, to_nucleotide, original_sequence[snv_start_idx-1:snv_start_idx+2])
-                    if is_coding:  # Retry with the full sequence
-                        return self.modify_gene_sequence(
-                            transcript.sequence,
-                            snv_start,
-                            snv_end,
-                            snv_action,
-                            snv_data,
-                            validate=validate
-                        )
                     return None
                 mutated_sequence = original_sequence[:snv_start_idx] + to_nucleotide + original_sequence[snv_end_idx:]
                 mutated_snv_start = snv_start
@@ -404,15 +402,6 @@ class SnvProbeHelper:
                 # assert inverted_sequence == conversion, "SNV data does not match the inverted sequence."
                 if inverted_sequence != conversion and validate:
                     # print("SNV data does not match the inverted sequence.")
-                    if is_coding:  # Retry with the full sequence
-                        return self.modify_gene_sequence(
-                            transcript.sequence,
-                            snv_start,
-                            snv_end,
-                            snv_action,
-                            snv_data,
-                            validate=validate
-                        )
                     return None
                 mutated_sequence = original_sequence[:snv_start_idx] + inverted_sequence + original_sequence[snv_end_idx:]
                 mutated_snv_start = snv_start
@@ -439,15 +428,6 @@ class SnvProbeHelper:
                 # Note that the duplication index is to the left of the duplicated nucleotide
                 if not original_sequence[snv_start_idx:snv_end_idx].startswith(duplicated) and validate:
                     # print("SNV data does not match the original sequence.")
-                    if is_coding:  # Retry with the full sequence
-                        return self.modify_gene_sequence(
-                            transcript.sequence,
-                            snv_start,
-                            snv_end,
-                            snv_action,
-                            snv_data,
-                            validate=validate
-                        )
                     return None
                 if duplicated == '':
                     # If the duplicated sequence is empty, we just insert the original sequence
@@ -461,15 +441,6 @@ class SnvProbeHelper:
                 mutated_snv_start = snv_start
                 mutated_snv_end = snv_end
             else:
-                if is_coding:  # Retry with the full sequence
-                    return self.modify_gene_sequence(
-                        transcript.sequence,
-                        snv_start,
-                        snv_end,
-                        snv_action,
-                        snv_data,
-                        validate=validate
-                    )
                 return None
         else:
             mutated_sequence = original_sequence
@@ -554,7 +525,8 @@ class SnvProbeHelper:
                     self.last_transcript_id = transcript.transcript_id
                     return results
 
-        raise ValueError(f"No correct protein coding transcripts found for {gene_name} with SNV at {snv_start}.")
+        raise ValueError(f"No correct protein coding transcripts found for {gene_name} with SNV at {snv_start}. "
+                         f"A c. position must lie inside the coding sequence and match its reference bases.")
 
     def parse_snv_info(self, dna_snv_string: str) -> tuple[int, int, str, str, int]:
         """
