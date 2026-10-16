@@ -418,7 +418,9 @@ class SnvProbeHelper:
                 mutated_snv_end = snv_start - 1 ## in the mutated sequence, this could be a 0bp probe; target_length should be 0
             elif snv_action == "insertion":
                 inserted_sequence = snv_data.replace("ins", "")
-                mutated_sequence = original_sequence[:snv_start_idx] + inserted_sequence + original_sequence[snv_start_idx:]
+                # HGVS c.N_N+1ins places the insertion after base N, which is
+                # 0-indexed position N (= snv_start), not snv_start_idx
+                mutated_sequence = original_sequence[:snv_start] + inserted_sequence + original_sequence[snv_start:]
                 mutated_snv_start = snv_start
                 mutated_snv_end = snv_end + len(inserted_sequence)
             elif snv_action == "deletion-insertion":
